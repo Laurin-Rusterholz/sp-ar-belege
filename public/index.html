@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Belegeinreichung — SP AR</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
 <style>
   :root {
     --bg: #fafafa;
@@ -216,6 +218,12 @@
     <button class="btn-submit" id="submitBtn" onclick="submitBeleg()">
       📤 Beleg einreichen
     </button>
+    <div id="uploadProgress" style="display:none;margin-top:10px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px;text-align:center">Datei wird zu Firebase hochgeladen...</div>
+      <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+        <div id="uploadProgressBar" style="height:100%;width:0%;background:var(--sp-red);border-radius:3px;transition:width .2s"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Success -->
@@ -236,8 +244,22 @@
 </div>
 
 <script>
+// Firebase init
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC6xVo-wmXC4JjG7qMQnOExIJU-UDvBluE",
+  authDomain: "jupidu-36804.firebaseapp.com",
+  projectId: "jupidu-36804",
+  storageBucket: "jupidu-36804.firebasestorage.app",
+  messagingSenderId: "11390726952",
+  appId: "1:11390726952:web:aba2f101b6c5ca2bc5561d"
+};
+let firebaseStorage = null;
+try {
+  firebase.initializeApp(FIREBASE_CONFIG);
+  firebaseStorage = firebase.storage();
+} catch(e) { console.warn('Firebase init failed:', e); }
+
 let selectedFile = null;
-let fileBase64 = null;
 
 // Toggle text
 document.getElementById('fPaid').addEventListener('change', function() {
@@ -255,21 +277,16 @@ fileDrop.addEventListener('drop', (e) => {
   fileDrop.classList.remove('dragover');
   if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
 });
-
 fileInput.addEventListener('change', function() {
   if (this.files.length) handleFile(this.files[0]);
 });
 
 function handleFile(file) {
   const maxSize = 5 * 1024 * 1024;
-  if (file.size > maxSize) {
-    showError('Datei zu gross (max. 5 MB)');
-    return;
-  }
+  if (file.size > maxSize) { showError('Datei zu gross (max. 5 MB)'); return; }
   const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic'];
   if (!allowed.includes(file.type) && !file.name.match(/\.(pdf|jpg|jpeg|png|webp|heic)$/i)) {
-    showError('Nur PDF und Bilder erlaubt');
-    return;
+    showError('Nur PDF und Bilder erlaubt'); return;
   }
   selectedFile = file;
   document.getElementById('fileName').textContent = file.name;
@@ -278,18 +295,10 @@ function handleFile(file) {
   document.getElementById('filePreview').style.display = 'block';
   fileDrop.style.display = 'none';
   hideError();
-
-  // Convert to base64
-  const reader = new FileReader();
-  reader.onload = () => {
-    fileBase64 = reader.result.split(',')[1]; // Remove data:... prefix
-  };
-  reader.readAsDataURL(file);
 }
 
 function removeFile() {
   selectedFile = null;
-  fileBase64 = null;
   fileInput.value = '';
   document.getElementById('filePreview').style.display = 'none';
   fileDrop.style.display = 'block';
@@ -301,14 +310,36 @@ function showError(msg) {
   el.style.display = 'block';
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
+function hideError() { document.getElementById('errorMsg').style.display = 'none'; }
 
-function hideError() {
-  document.getElementById('errorMsg').style.display = 'none';
+function setProgress(pct) {
+  const bar = document.getElementById('uploadProgressBar');
+  const wrap = document.getElementById('uploadProgress');
+  if (wrap) wrap.style.display = pct >= 0 ? 'block' : 'none';
+  if (bar) bar.style.width = pct + '%';
+}
+
+async function uploadToFirebase(file) {
+  if (!firebaseStorage) throw new Error('Firebase nicht verfügbar');
+  const fileId = 'f_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+  const path = 'belege/' + fileId + '_' + file.name;
+  const ref = firebaseStorage.ref(path);
+  const meta = { contentType: file.type || 'application/octet-stream' };
+  const task = ref.put(file, meta);
+  return new Promise((resolve, reject) => {
+    task.on('state_changed',
+      (snap) => setProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
+      reject,
+      async () => {
+        const url = await task.snapshot.ref.getDownloadURL();
+        resolve({ url, path, fileId });
+      }
+    );
+  });
 }
 
 async function submitBeleg() {
   hideError();
-
   const name = document.getElementById('fName').value.trim();
   const title = document.getElementById('fTitle').value.trim();
   const amount = document.getElementById('fAmount').value;
@@ -323,18 +354,39 @@ async function submitBeleg() {
   const btn = document.getElementById('submitBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Wird gesendet...';
+  setProgress(0);
 
   try {
+    // 1. Upload file directly to Firebase Storage
+    let firebaseUrl = null;
+    let firebasePath = null;
+    if (selectedFile) {
+      if (!firebaseStorage) {
+        showError('Firebase nicht verfügbar — Datei kann nicht hochgeladen werden. Bitte später erneut versuchen.');
+        btn.disabled = false;
+        btn.innerHTML = '📤 Beleg einreichen';
+        return;
+      }
+      btn.innerHTML = '<span class="spinner"></span> Datei wird hochgeladen...';
+      const result = await uploadToFirebase(selectedFile);
+      firebaseUrl = result.url;
+      firebasePath = result.path;
+      setProgress(-1);
+    }
+
+    // 2. Submit beleg metadata (with Firebase URL) to Netlify
+    btn.innerHTML = '<span class="spinner"></span> Wird gespeichert...';
     const payload = {
-      name,
-      title,
+      name, title,
       amount: parseFloat(amount),
       dueDate: dueDate || null,
-      paid,
-      comment,
+      paid, comment,
       fileName: selectedFile?.name || null,
       fileType: selectedFile?.type || null,
-      fileData: fileBase64 || null,
+      hasFile: !!selectedFile,
+      firebaseUrl,      // direct Firebase Storage URL
+      firebasePath,
+      fileData: null,   // no longer storing file in Netlify Blobs
     };
 
     const r = await fetch('/.netlify/functions/beleg-submit', {
@@ -342,17 +394,17 @@ async function submitBeleg() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Fehler beim Senden');
 
     document.getElementById('formView').style.display = 'none';
     document.getElementById('successView').style.display = 'block';
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  } catch (err) {
+  } catch(err) {
     showError('Fehler: ' + err.message);
     btn.disabled = false;
     btn.innerHTML = '📤 Beleg einreichen';
+    setProgress(-1);
   }
 }
 
