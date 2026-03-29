@@ -13,7 +13,7 @@ export default async (req, context) => {
 
   try {
     const body = await req.json();
-    const { name, title, amount, dueDate, paid, comment, fileName, fileType, fileData } = body;
+    const { name, title, amount, dueDate, paid, comment, fileName, fileType, hasFile, firebaseUrl, firebasePath } = body;
 
     if (!name || !title) {
       return new Response(JSON.stringify({ error: "Name und Titel sind Pflicht" }), { status: 400, headers: cors });
@@ -32,16 +32,14 @@ export default async (req, context) => {
       comment: (comment || "").trim(),
       fileName: fileName || null,
       fileType: fileType || null,
-      hasFile: !!fileData,
+      hasFile: !!hasFile,
+      firebaseUrl: firebaseUrl || null,
+      firebasePath: firebasePath || null,
       status: "neu",
       createdAt: new Date().toISOString(),
     };
 
     await store.set("beleg:" + id, JSON.stringify(beleg));
-
-    if (fileData) {
-      await store.set("file:" + id, fileData);
-    }
 
     let index = [];
     try {
