@@ -15,10 +15,10 @@ export default async (req, context) => {
     if (!id) return new Response("Missing id", { status: 400, headers: cors });
 
     const store = getStore("belege");
-    
+
     const metaRaw = await store.get("beleg:" + id);
     const meta = metaRaw ? JSON.parse(metaRaw) : {};
-    
+
     const fileData = await store.get("file:" + id);
     if (!fileData) return new Response("File not found", { status: 404, headers: cors });
 
@@ -29,11 +29,10 @@ export default async (req, context) => {
       headers: {
         ...cors,
         "Content-Type": meta.fileType || "application/octet-stream",
-        "Content-Disposition": `inline; filename="${meta.fileName || 'beleg'}"`,
+        "Content-Disposition": "inline; filename=" + (meta.fileName || "beleg"),
       },
     });
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { ...cors, "Content-Type": "application/json" } });
   }
 };
-```
