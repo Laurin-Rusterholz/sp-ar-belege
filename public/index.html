@@ -322,17 +322,31 @@ function setProgress(pct) {
 async function uploadToFirebase(file) {
   if (!firebaseStorage) throw new Error('Firebase nicht verfügbar');
   const fileId = 'f_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
-  const path = 'belege/' + fileId + '_' + file.name;
+  // Dateiname bereinigen (keine Sonderzeichen, die Firebase-Pfade brechen könnten)
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, '_');
+  const path = 'belege/' + fileId + '_' + safeName;
   const ref = firebaseStorage.ref(path);
-  const meta = { contentType: file.type || 'application/octet-stream' };
+  const meta = {
+    contentType: file.type || 'application/octet-stream',
+    customMetadata: { originalName: file.name, uploadedAt: new Date().toISOString() }
+  };
   const task = ref.put(file, meta);
   return new Promise((resolve, reject) => {
     task.on('state_changed',
       (snap) => setProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
-      reject,
+      (err) => {
+        console.error('[Firebase Upload] Fehler:', err);
+        reject(err);
+      },
       async () => {
-        const url = await task.snapshot.ref.getDownloadURL();
-        resolve({ url, path, fileId });
+        try {
+          const url = await task.snapshot.ref.getDownloadURL();
+          console.log('[Firebase Upload] OK:', { url, path, fileId, size: file.size });
+          if (!url || !url.startsWith('http')) throw new Error('Ungültige Download-URL');
+          resolve({ url, path, fileId, size: file.size });
+        } catch(e) {
+          reject(e);
+        }
       }
     );
   });
@@ -360,6 +374,8 @@ async function submitBeleg() {
     // 1. Upload file directly to Firebase Storage
     let firebaseUrl = null;
     let firebasePath = null;
+    let firebaseFileId = null;
+    let fileSize = null;
     if (selectedFile) {
       if (!firebaseStorage) {
         showError('Firebase nicht verfügbar — Datei kann nicht hochgeladen werden. Bitte später erneut versuchen.');
@@ -371,7 +387,13 @@ async function submitBeleg() {
       const result = await uploadToFirebase(selectedFile);
       firebaseUrl = result.url;
       firebasePath = result.path;
+      firebaseFileId = result.fileId;
+      fileSize = result.size;
       setProgress(-1);
+      // Verifikation: URL muss gesetzt sein wenn Datei angehängt
+      if (!firebaseUrl) {
+        throw new Error('Firebase Upload hat keine URL geliefert');
+      }
     }
 
     // 2. Submit beleg metadata (with Firebase URL) to Netlify
@@ -383,11 +405,20 @@ async function submitBeleg() {
       paid, comment,
       fileName: selectedFile?.name || null,
       fileType: selectedFile?.type || null,
+      fileSize: fileSize,
       hasFile: !!selectedFile,
-      firebaseUrl,      // direct Firebase Storage URL
-      firebasePath,
+      firebaseUrl,      // direct Firebase Storage URL (long-lived download URL)
+      firebasePath,     // Path in Firebase Storage (für Admin-Zugriff)
+      firebaseFileId,   // Unique File ID
       fileData: null,   // no longer storing file in Netlify Blobs
+      submittedAt: new Date().toISOString(),
     };
+
+    console.log('[Beleg Submit] Payload:', {
+      hasFile: payload.hasFile,
+      firebaseUrl: payload.firebaseUrl ? payload.firebaseUrl.substring(0, 80) + '...' : null,
+      title: payload.title
+    });
 
     const r = await fetch('/.netlify/functions/beleg-submit', {
       method: 'POST',
@@ -396,11 +427,13 @@ async function submitBeleg() {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'Fehler beim Senden');
+    console.log('[Beleg Submit] Erfolgreich:', data);
 
     document.getElementById('formView').style.display = 'none';
     document.getElementById('successView').style.display = 'block';
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch(err) {
+    console.error('[Beleg Submit] Fehler:', err);
     showError('Fehler: ' + err.message);
     btn.disabled = false;
     btn.innerHTML = '📤 Beleg einreichen';
