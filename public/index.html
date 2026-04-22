@@ -157,24 +157,42 @@
   <!-- Form -->
   <div id="formView">
     <div class="card">
-      <h2>📋 Beleg einreichen</h2>
-      
+      <h2>📎 Dokument anhängen <span class="req">*</span></h2>
+      <div class="file-drop" id="fileDrop">
+        <div class="icon">📄</div>
+        <div class="text">Datei hier ablegen oder <strong>klicken zum Auswählen</strong></div>
+        <div class="text" style="margin-top:4px;font-size:11px">PDF, JPG, PNG · Max. 5 MB</div>
+        <input type="file" id="fFile" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
+      </div>
+      <div id="filePreview" style="display:none">
+        <div class="file-preview">
+          <span style="font-size:20px" id="fileIcon">📄</span>
+          <span class="name" id="fileName"></span>
+          <span class="size" id="fileSize"></span>
+          <button class="remove" onclick="removeFile()">✕</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📋 Details <span style="font-size:12px;font-weight:400;color:var(--muted)">(alle optional)</span></h2>
+
       <div id="errorMsg" class="error-msg"></div>
 
       <label>
-        <span class="lbl">Dein Name <span class="req">*</span></span>
-        <input type="text" id="fName" placeholder="Vor- und Nachname" />
+        <span class="lbl">Dein Name</span>
+        <input type="text" id="fName" placeholder="Optional – Vor- und Nachname" />
       </label>
 
       <label>
-        <span class="lbl">Beleg-Titel <span class="req">*</span></span>
-        <input type="text" id="fTitle" placeholder="z.B. Druckkosten Flyer, Saalmiete, Material" />
+        <span class="lbl">Beleg-Titel</span>
+        <input type="text" id="fTitle" placeholder="Optional – z.B. Druckkosten Flyer, Saalmiete" />
       </label>
 
       <div class="row">
         <label>
-          <span class="lbl">Betrag (CHF) <span class="req">*</span></span>
-          <input type="number" id="fAmount" placeholder="0.00" step="0.05" min="0" />
+          <span class="lbl">Betrag (CHF)</span>
+          <input type="number" id="fAmount" placeholder="Optional" step="0.05" min="0" />
         </label>
         <label>
           <span class="lbl">Fälligkeitsdatum</span>
@@ -193,26 +211,8 @@
 
       <label>
         <span class="lbl">Kommentar</span>
-        <textarea id="fComment" placeholder="Zusätzliche Informationen zum Beleg..."></textarea>
+        <textarea id="fComment" placeholder="Optional – zusätzliche Informationen zum Beleg..."></textarea>
       </label>
-    </div>
-
-    <div class="card">
-      <h2>📎 Dokument anhängen</h2>
-      <div class="file-drop" id="fileDrop">
-        <div class="icon">📄</div>
-        <div class="text">Datei hier ablegen oder <strong>klicken zum Auswählen</strong></div>
-        <div class="text" style="margin-top:4px;font-size:11px">PDF, JPG, PNG · Max. 5 MB</div>
-        <input type="file" id="fFile" accept=".pdf,.jpg,.jpeg,.png,.heic,.webp" />
-      </div>
-      <div id="filePreview" style="display:none">
-        <div class="file-preview">
-          <span style="font-size:20px" id="fileIcon">📄</span>
-          <span class="name" id="fileName"></span>
-          <span class="size" id="fileSize"></span>
-          <button class="remove" onclick="removeFile()">✕</button>
-        </div>
-      </div>
     </div>
 
     <button class="btn-submit" id="submitBtn" onclick="submitBeleg()">
@@ -361,9 +361,19 @@ async function submitBeleg() {
   const paid = document.getElementById('fPaid').checked;
   const comment = document.getElementById('fComment').value.trim();
 
-  if (!name) { showError('Bitte gib deinen Namen ein'); return; }
-  if (!title) { showError('Bitte gib einen Beleg-Titel ein'); return; }
-  if (!amount || parseFloat(amount) <= 0) { showError('Bitte gib einen gültigen Betrag ein'); return; }
+  // ✅ FIX: Nur die Datei ist Pflicht. Alle anderen Felder sind optional.
+  if (!selectedFile) {
+    showError('Bitte hänge eine Datei an (einziges Pflichtfeld)');
+    return;
+  }
+
+  // Fallbacks für optionale Felder
+  const effectiveName = name || 'Unbekannt';
+  // Titel-Fallback: Dateiname ohne Extension
+  const fileBaseName = (selectedFile.name || '').replace(/\.[^.]+$/, '').trim();
+  const effectiveTitle = title || fileBaseName || ('Beleg vom ' + new Date().toLocaleDateString('de-CH'));
+  // Betrag: 0 wenn nicht angegeben (kein Fehler mehr)
+  const effectiveAmount = amount && parseFloat(amount) > 0 ? parseFloat(amount) : 0;
 
   const btn = document.getElementById('submitBtn');
   btn.disabled = true;
@@ -399,8 +409,9 @@ async function submitBeleg() {
     // 2. Submit beleg metadata (with Firebase URL) to Netlify
     btn.innerHTML = '<span class="spinner"></span> Wird gespeichert...';
     const payload = {
-      name, title,
-      amount: parseFloat(amount),
+      name: effectiveName,
+      title: effectiveTitle,
+      amount: effectiveAmount,
       dueDate: dueDate || null,
       paid, comment,
       fileName: selectedFile?.name || null,
@@ -412,12 +423,19 @@ async function submitBeleg() {
       firebaseFileId,   // Unique File ID
       fileData: null,   // no longer storing file in Netlify Blobs
       submittedAt: new Date().toISOString(),
+      // Flag: welche Felder hat der User selbst ausgefüllt?
+      userProvidedFields: {
+        name: !!name, title: !!title, amount: !!(amount && parseFloat(amount) > 0),
+        dueDate: !!dueDate, comment: !!comment
+      }
     };
 
     console.log('[Beleg Submit] Payload:', {
       hasFile: payload.hasFile,
       firebaseUrl: payload.firebaseUrl ? payload.firebaseUrl.substring(0, 80) + '...' : null,
-      title: payload.title
+      title: payload.title,
+      amount: payload.amount,
+      userProvided: payload.userProvidedFields
     });
 
     const r = await fetch('/.netlify/functions/beleg-submit', {
